@@ -2,6 +2,13 @@
 
 Reference-based image generation using Google Gemini. Replace expensive fine-tuning with instant, reference-based generation.
 
+## Features
+
+- **Multi-Reference Generation**: Combine up to 2 reference sets (Face + Object, Style + Style, etc.)
+- **Image-to-Image Mode**: Transform existing images using your fine-tuning references
+- **Async & Batch Processing**: Generate multiple images in parallel for faster throughput
+- **Multiple Output Formats**: PIL, bytes, base64, data URIs, or save to disk
+
 ## Installation
 
 ```bash
@@ -21,6 +28,8 @@ pip install -e .
 
 ## Quick Start
 
+### Single Category Generation
+
 ```python
 from ref_image_gen import ObjectGenerator, GenerationConfig, AspectRatio
 from PIL import Image
@@ -30,12 +39,11 @@ generator = ObjectGenerator(
     credentials_path="service-account.json",
 )
 
-# Load reference images
+# Load reference images (1-4 images)
 reference_images = [
     Image.open("product_1.jpg"),
     Image.open("product_2.jpg"),
     Image.open("product_3.jpg"),
-    Image.open("product_4.jpg"),
 ]
 
 # Generate images
@@ -43,7 +51,6 @@ result = generator.generate(
     prompt="Product on a white background with soft studio lighting",
     reference_images=reference_images,
     config=GenerationConfig(
-        num_images=2,
         aspect_ratio=AspectRatio.SQUARE_1_1,
     ),
 )
@@ -54,6 +61,68 @@ pil_images = result.to_pil()
 # Or get base64 for API responses
 base64_images = result.to_base64()
 ```
+
+### Multi-Reference Generation
+
+Combine up to 2 reference sets for complex generations:
+
+```python
+from ref_image_gen import MultiRefGenerator, GenerationConfig, ReferenceSet, CategoryType
+from PIL import Image
+
+generator = MultiRefGenerator(credentials_path="service-account.json")
+
+# Combine Face + Object references
+result = generator.generate(
+    prompt="Person holding the product in a modern kitchen",
+    reference_sets=[
+        ReferenceSet(
+            category=CategoryType.FACE,
+            images=[Image.open("face1.jpg"), Image.open("face2.jpg")],
+        ),
+        ReferenceSet(
+            category=CategoryType.OBJECT,
+            images=[Image.open("product1.jpg"), Image.open("product2.jpg")],
+        ),
+    ],
+)
+```
+
+**Valid Combinations:**
+- Single: Object, Style, Face
+- Combined: Face+Face, Face+Object, Face+Style, Object+Object, Object+Style, Style+Style
+
+### Image-to-Image Mode
+
+Transform an existing image using your fine-tuning references:
+
+```python
+from ref_image_gen import MultiRefGenerator, GenerationConfig, ReferenceSet, CategoryType
+from PIL import Image
+
+generator = MultiRefGenerator(credentials_path="service-account.json")
+
+# Load source image to transform
+source_image = Image.open("photo_to_transform.jpg")
+
+# Apply artistic style from references
+result = generator.generate(
+    prompt="",  # Optional - auto-generated if empty
+    reference_sets=[
+        ReferenceSet(
+            category=CategoryType.STYLE,
+            images=[Image.open("style1.jpg"), Image.open("style2.jpg")],
+        ),
+    ],
+    config=GenerationConfig(
+        source_image=source_image,  # Enables image-to-image mode
+    ),
+)
+```
+
+**How it works:**
+- **Text-to-Image** (default): Prompt required, generates from scratch
+- **Image-to-Image**: Source image + references, prompt optional (auto-generated based on categories)
 
 ## Generators
 
@@ -108,16 +177,106 @@ result = generator.generate(
 )
 ```
 
+### MultiRefGenerator
+
+For combining multiple reference categories in a single generation.
+
+```python
+from ref_image_gen import MultiRefGenerator, ReferenceSet, CategoryType
+from PIL import Image
+
+generator = MultiRefGenerator(credentials_path="service-account.json")
+
+result = generator.generate(
+    prompt="Person in a garden with artistic lighting",
+    reference_sets=[
+        ReferenceSet(category=CategoryType.FACE, images=[Image.open("face.jpg")]),
+        ReferenceSet(category=CategoryType.STYLE, images=[Image.open("style.jpg")]),
+    ],
+)
+```
+
+## Async & Batch Processing
+
+### Single Async Generation
+
+Non-blocking generation for web servers:
+
+```python
+import asyncio
+from ref_image_gen import MultiRefGenerator, ReferenceSet, CategoryType
+
+async def main():
+    generator = MultiRefGenerator(credentials_path="service-account.json")
+
+    result = await generator.generate_async(
+        prompt="Person on a beach at sunset",
+        reference_sets=[
+            ReferenceSet(category=CategoryType.FACE, images=[face_img]),
+        ],
+    )
+    return result.to_pil()
+
+asyncio.run(main())
+```
+
+### Batch Parallel Generation
+
+Generate multiple images concurrently for faster throughput:
+
+```python
+import asyncio
+from ref_image_gen import MultiRefGenerator, ReferenceSet, CategoryType
+from ref_image_gen.async_utils import batch_generate_async, GenerationRequest
+
+async def main():
+    generator = MultiRefGenerator(credentials_path="service-account.json")
+
+    # Define multiple generation requests
+    requests = [
+        GenerationRequest(
+            prompt="Person on a beach",
+            reference_sets=[ReferenceSet(category=CategoryType.FACE, images=[face_img])],
+            request_id="beach",
+        ),
+        GenerationRequest(
+            prompt="Person in a city",
+            reference_sets=[ReferenceSet(category=CategoryType.FACE, images=[face_img])],
+            request_id="city",
+        ),
+        GenerationRequest(
+            prompt="Person in a forest",
+            reference_sets=[ReferenceSet(category=CategoryType.FACE, images=[face_img])],
+            request_id="forest",
+        ),
+    ]
+
+    # Run all requests in parallel
+    batch_result = await batch_generate_async(
+        generator=generator,
+        requests=requests,
+        max_concurrent=3,  # Limit concurrent requests to avoid rate limits
+    )
+
+    print(f"Successful: {batch_result.successful}, Failed: {batch_result.failed}")
+
+    for request_id, result in batch_result.results:
+        print(f"{request_id}: Generated {len(result.images)} images")
+
+asyncio.run(main())
+```
+
 ## Configuration
 
 ```python
 from ref_image_gen import GenerationConfig, AspectRatio, ModelType, Resolution
+from PIL import Image
 
 config = GenerationConfig(
-    num_images=4,                             # Number of images to generate
     aspect_ratio=AspectRatio.LANDSCAPE_16_9,  # Output aspect ratio
     model=ModelType.NANO,                     # Model: NANO or PRO
     resolution=Resolution.RES_2K,             # Resolution (Pro only): 1K, 2K, 4K
+    source_image=Image.open("source.jpg"),    # For image-to-image mode (optional)
     output_mime_type="image/png",             # Output format
 )
 ```
@@ -138,7 +297,7 @@ config = GenerationConfig(
 ### Models
 
 - `ModelType.NANO` - Fast, efficient model (default)
-- `ModelType.PRO` - Higher quality, supports resolution selection
+- `ModelType.PRO` - Higher quality, supports resolution selection (1K, 2K, 4K)
 
 ## Working with Results
 
@@ -165,6 +324,7 @@ saved_paths = result.save_images(output_dir="./output", prefix="generated")
 # Access metadata
 print(result.prompt_used)
 print(result.metadata)
+# metadata includes: category, combination, mode, reference_count, config
 ```
 
 ## Input Formats
@@ -187,6 +347,15 @@ images = [image_bytes]
 result = generator.generate(prompt="...", reference_images=images)
 ```
 
+## Constraints
+
+| Constraint | Value |
+|------------|-------|
+| Min images per category | 1 |
+| Max images per category | 4 |
+| Max reference sets | 2 |
+| Supported formats | PNG, JPEG, WebP |
+
 ## Demo
 
 Run the Gradio demo to test the package:
@@ -201,6 +370,14 @@ python demo/app.py
 ```
 
 Open http://localhost:7860 in your browser.
+
+## API Reference
+
+See [docs/api-reference.md](docs/api-reference.md) for detailed API documentation including:
+- Input/Output schemas
+- All valid category combinations
+- Error handling
+- Rate limits
 
 ## Comparison with Fine-Tuning
 

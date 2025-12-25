@@ -88,7 +88,7 @@ def build_reference_sets(cat1, files1, cat2, files2):
     return reference_sets
 
 
-def build_config(aspect_ratio, model_type, resolution):
+def build_config(aspect_ratio, model_type, resolution, source_image=None):
     """Build generation config from UI inputs."""
     ratio_map = {
         "21:9 (Ultra Wide)": AspectRatio.ULTRA_WIDE_21_9,
@@ -112,10 +112,16 @@ def build_config(aspect_ratio, model_type, resolution):
     }
     res = res_map.get(resolution) if model == ModelType.PRO else None
 
+    # Load source image if provided
+    source_img = None
+    if source_image:
+        source_img = Image.open(source_image)
+
     return GenerationConfig(
         aspect_ratio=ratio_map.get(aspect_ratio, AspectRatio.SQUARE_1_1),
         model=model,
         resolution=res,
+        source_image=source_img,
     )
 
 
@@ -127,6 +133,8 @@ async def generate_images(
     # Reference Set 2
     cat2: str,
     files2: list,
+    # Source image for image-to-image mode
+    source_image,
     # Generation settings
     aspect_ratio: str,
     model_type: str,
@@ -140,13 +148,21 @@ async def generate_images(
     if not reference_sets:
         raise gr.Error("Please upload at least one reference set")
 
-    if not prompt:
-        raise gr.Error("Please enter a prompt")
+    # Determine mode
+    has_source = source_image is not None
+    mode_type = "image-to-image" if has_source else "text-to-image"
 
-    config = build_config(aspect_ratio, model_type, resolution)
+    # Prompt is required for text-to-image, optional for image-to-image
+    if not has_source and not prompt:
+        raise gr.Error("Please enter a prompt for text-to-image mode")
+
+    # Use empty string if no prompt provided (for image-to-image)
+    prompt = prompt or ""
+
+    config = build_config(aspect_ratio, model_type, resolution, source_image)
 
     if use_mock:
-        return create_mock_output(reference_sets, prompt, config), "Mock mode - no timing"
+        return create_mock_output(reference_sets, prompt, config), f"Mock mode ({mode_type})"
 
     generator = get_generator()
     start_time = time.time()
@@ -173,7 +189,7 @@ async def generate_images(
         mode = "Sync"
 
     elapsed = time.time() - start_time
-    timing_info = f"{mode} generation: {elapsed:.2f}s"
+    timing_info = f"{mode} {mode_type}: {elapsed:.2f}s"
 
     return result.to_pil(), timing_info
 
@@ -425,9 +441,22 @@ with gr.Blocks(title="Multi-Reference Image Generator", theme=gr.themes.Soft()) 
             with gr.Tabs():
                 # Tab 1: Single Generation (Sync vs Async)
                 with gr.TabItem("Single Generation"):
+                    gr.Markdown("""
+                    **Text-to-Image**: Enter a prompt to generate from scratch.
+                    **Image-to-Image**: Upload a source image to transform it using your fine-tuning.
+                    """)
+
+                    # Source image for image-to-image mode
+                    with gr.Group():
+                        source_image = gr.Image(
+                            label="Source Image (optional - for image-to-image)",
+                            type="filepath",
+                            height=150,
+                        )
+
                     prompt = gr.Textbox(
-                        label="Scene Description",
-                        placeholder="Describe the scene you want to generate...",
+                        label="Prompt",
+                        placeholder="Required for text-to-image. Optional for image-to-image (adds extra guidance)...",
                         lines=3,
                     )
 
@@ -505,6 +534,7 @@ with gr.Blocks(title="Multi-Reference Image Generator", theme=gr.themes.Soft()) 
             prompt,
             cat1, files1,
             cat2, files2,
+            source_image,
             aspect_ratio,
             model_type,
             resolution,

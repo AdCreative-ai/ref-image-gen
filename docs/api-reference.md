@@ -7,12 +7,15 @@ Technical documentation for the Reference-Based Image Generation API.
 ## Table of Contents
 
 1. [Constraints](#constraints)
-2. [Generation Types](#generation-types)
-3. [Multi-Reference Combinations](#multi-reference-combinations)
-4. [Input Schema](#input-schema)
-5. [Output Schema](#output-schema)
-6. [Errors](#errors)
-7. [Rate Limits](#rate-limits)
+2. [Generation Modes](#generation-modes)
+3. [Generation Types](#generation-types)
+4. [Multi-Reference Combinations](#multi-reference-combinations)
+5. [Input Schema](#input-schema)
+6. [Output Schema](#output-schema)
+7. [Python Usage Examples](#python-usage-examples)
+8. [Async & Batch Processing](#async--batch-processing)
+9. [Errors](#errors)
+10. [Rate Limits](#rate-limits)
 
 ---
 
@@ -57,6 +60,81 @@ Technical documentation for the Reference-Based Image Generation API.
 | `1K` | ~1024px |
 | `2K` | ~2048px |
 | `4K` | ~4096px |
+
+---
+
+## Generation Modes
+
+The API supports two generation modes:
+
+### Text-to-Image (Default)
+
+Generate new images from scratch using a text prompt and reference images.
+
+```
+Reference Images + Prompt → Generated Image
+```
+
+**Requirements:**
+- Prompt is **required**
+- 1-4 reference images per category
+- Up to 2 reference sets
+
+**Example:**
+```json
+{
+  "prompt": "Product on a marble table with soft lighting",
+  "reference_sets": [{"category": "object", "images": [...]}]
+}
+```
+
+---
+
+### Image-to-Image
+
+Transform an existing source image using your fine-tuning references.
+
+```
+Source Image + Reference Images + Prompt (optional) → Transformed Image
+```
+
+**Requirements:**
+- Source image is **required**
+- Prompt is **optional** (auto-generated if empty)
+- 1-4 reference images per category
+- Up to 2 reference sets
+
+**Behavior:**
+- The source image provides the composition, layout, and scene
+- Reference images apply the fine-tuning (style, object identity, or face)
+- Optional prompt adds additional guidance
+
+**Auto-Generated Prompts:**
+
+When no prompt is provided, the system generates context-aware prompts:
+
+| Fine-Tuning | Auto-Generated Prompt |
+|-------------|----------------------|
+| Style | "Transform this image using the artistic style from the reference" |
+| Face | "Transform this image, preserving the facial identity from the reference" |
+| Object | "Transform this image, incorporating the exact object from the reference" |
+| Face + Style | "Transform this image with the person's face in the artistic style" |
+| Face + Object | "Transform this image with the person holding/using the product" |
+| Object + Style | "Transform this image with the product in the artistic style" |
+| Face + Face | "Transform this image with both people's identities preserved" |
+| Object + Object | "Transform this image with both products incorporated" |
+| Style + Style | "Transform this image blending both artistic styles" |
+
+**Example:**
+```json
+{
+  "prompt": "",
+  "reference_sets": [{"category": "style", "images": [...]}],
+  "config": {
+    "source_image": "<source_image_bytes>"
+  }
+}
+```
 
 ---
 
@@ -137,14 +215,15 @@ Combine up to 2 reference sets for complex generations.
 ```json
 {
   "category": "object | style | face",
-  "prompt": "string (required) - Scene description",
+  "prompt": "string (required for text-to-image, optional for image-to-image)",
   "reference_images": [
     "bytes | base64 | PIL.Image (1-4 images, required)"
   ],
   "config": {
     "aspect_ratio": "1:1 | 16:9 | 9:16 | ... (optional, default: 1:1)",
     "model": "nano | pro (optional, default: nano)",
-    "resolution": "1K | 2K | 4K (optional, pro model only)"
+    "resolution": "1K | 2K | 4K (optional, pro model only)",
+    "source_image": "bytes | base64 | PIL.Image (optional, enables image-to-image)"
   }
 }
 ```
@@ -153,7 +232,7 @@ Combine up to 2 reference sets for complex generations.
 
 ```json
 {
-  "prompt": "string (required) - Scene description",
+  "prompt": "string (required for text-to-image, optional for image-to-image)",
   "reference_sets": [
     {
       "category": "object | style | face",
@@ -167,7 +246,8 @@ Combine up to 2 reference sets for complex generations.
   "config": {
     "aspect_ratio": "1:1 | 16:9 | 9:16 | ... (optional, default: 1:1)",
     "model": "nano | pro (optional, default: nano)",
-    "resolution": "1K | 2K | 4K (optional, pro model only)"
+    "resolution": "1K | 2K | 4K (optional, pro model only)",
+    "source_image": "bytes | base64 | PIL.Image (optional, enables image-to-image)"
   }
 }
 ```
@@ -177,12 +257,13 @@ Combine up to 2 reference sets for complex generations.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `category` | string | Yes | One of: `object`, `style`, `face` |
-| `prompt` | string | Yes | Text description of desired output scene |
+| `prompt` | string | Conditional | Required for text-to-image, optional for image-to-image |
 | `reference_images` | array | Yes | 1-4 reference images |
 | `reference_sets` | array | Yes* | 1-2 reference sets (*for multi-reference) |
 | `config.aspect_ratio` | string | No | Output aspect ratio (default: `1:1`) |
 | `config.model` | string | No | Model to use (default: `nano`) |
 | `config.resolution` | string | No | Output resolution (Pro model only) |
+| `config.source_image` | bytes/base64/PIL | No | Source image for image-to-image mode |
 
 ---
 
@@ -198,6 +279,7 @@ Combine up to 2 reference sets for complex generations.
   "metadata": {
     "category": "object | style | face",
     "combination": "face+object | style+style | ... (multi-ref only)",
+    "mode": "text-to-image | image-to-image",
     "reference_count": 4,
     "reference_sets": [
       {"category": "face", "image_count": 2},
@@ -240,6 +322,182 @@ pil_images = result.to_pil()
 # Save to disk
 result.save_images(output_dir="./outputs", prefix="generated")
 ```
+
+---
+
+## Python Usage Examples
+
+### Single Category (Text-to-Image)
+
+```python
+from ref_image_gen import ObjectGenerator, GenerationConfig, AspectRatio
+from PIL import Image
+
+generator = ObjectGenerator(credentials_path="service-account.json")
+
+result = generator.generate(
+    prompt="Product on marble surface with soft lighting",
+    reference_images=[
+        Image.open("product1.jpg"),
+        Image.open("product2.jpg"),
+    ],
+    config=GenerationConfig(
+        aspect_ratio=AspectRatio.LANDSCAPE_16_9,
+    ),
+)
+
+# Get base64 for JSON API response
+response = {
+    "images": result.to_base64(),
+    "mime_type": result.mime_type,
+    "metadata": result.metadata,
+}
+```
+
+### Multi-Reference (Text-to-Image)
+
+```python
+from ref_image_gen import MultiRefGenerator, GenerationConfig, ReferenceSet, CategoryType
+from PIL import Image
+
+generator = MultiRefGenerator(credentials_path="service-account.json")
+
+result = generator.generate(
+    prompt="Person holding the product in a modern kitchen",
+    reference_sets=[
+        ReferenceSet(
+            category=CategoryType.FACE,
+            images=[Image.open("face1.jpg"), Image.open("face2.jpg")],
+        ),
+        ReferenceSet(
+            category=CategoryType.OBJECT,
+            images=[Image.open("product1.jpg")],
+        ),
+    ],
+)
+```
+
+### Image-to-Image Transformation
+
+```python
+from ref_image_gen import MultiRefGenerator, GenerationConfig, ReferenceSet, CategoryType
+from PIL import Image
+
+generator = MultiRefGenerator(credentials_path="service-account.json")
+
+# Transform a photo using style references
+result = generator.generate(
+    prompt="",  # Auto-generated: "Transform this image using the artistic style..."
+    reference_sets=[
+        ReferenceSet(
+            category=CategoryType.STYLE,
+            images=[Image.open("style1.jpg"), Image.open("style2.jpg")],
+        ),
+    ],
+    config=GenerationConfig(
+        source_image=Image.open("photo_to_transform.jpg"),
+    ),
+)
+```
+
+### Image-to-Image with Custom Prompt
+
+```python
+result = generator.generate(
+    prompt="Apply the artistic style with emphasis on warm colors",  # Custom guidance
+    reference_sets=[
+        ReferenceSet(category=CategoryType.STYLE, images=[style_img]),
+    ],
+    config=GenerationConfig(
+        source_image=source_img,
+    ),
+)
+```
+
+---
+
+## Async & Batch Processing
+
+### Single Async Generation
+
+Non-blocking for web server integration:
+
+```python
+import asyncio
+from ref_image_gen import MultiRefGenerator, ReferenceSet, CategoryType
+
+async def generate_image(prompt, face_img):
+    generator = MultiRefGenerator(credentials_path="service-account.json")
+
+    result = await generator.generate_async(
+        prompt=prompt,
+        reference_sets=[
+            ReferenceSet(category=CategoryType.FACE, images=[face_img]),
+        ],
+    )
+    return result.to_base64()
+
+# In async context (FastAPI, aiohttp, etc.)
+images = await generate_image("Person on beach", face_img)
+```
+
+### Batch Parallel Generation
+
+Generate multiple images concurrently:
+
+```python
+import asyncio
+from ref_image_gen import MultiRefGenerator, ReferenceSet, CategoryType
+from ref_image_gen.async_utils import batch_generate_async, GenerationRequest
+
+async def generate_batch():
+    generator = MultiRefGenerator(credentials_path="service-account.json")
+
+    requests = [
+        GenerationRequest(
+            prompt="Person on a beach",
+            reference_sets=[ReferenceSet(category=CategoryType.FACE, images=[face_img])],
+            request_id="beach",
+        ),
+        GenerationRequest(
+            prompt="Person in a city",
+            reference_sets=[ReferenceSet(category=CategoryType.FACE, images=[face_img])],
+            request_id="city",
+        ),
+        GenerationRequest(
+            prompt="Person in a forest",
+            reference_sets=[ReferenceSet(category=CategoryType.FACE, images=[face_img])],
+            request_id="forest",
+        ),
+    ]
+
+    batch_result = await batch_generate_async(
+        generator=generator,
+        requests=requests,
+        max_concurrent=3,
+    )
+
+    return {
+        "successful": batch_result.successful,
+        "failed": batch_result.failed,
+        "results": {
+            req_id: result.to_base64()
+            for req_id, result in batch_result.results
+        },
+        "errors": {
+            req_id: str(error)
+            for req_id, error in batch_result.errors
+        },
+    }
+```
+
+### Performance Comparison
+
+| Mode | 4 Images | Use Case |
+|------|----------|----------|
+| Sequential | ~40s | Simple scripts |
+| Async (single) | ~40s | Non-blocking web servers |
+| Batch Parallel | ~12s | Bulk generation |
 
 ---
 
@@ -320,7 +578,7 @@ print(f"Failed: {batch_result.failed}")
 }
 ```
 
-### Full Request Example
+### Full Request Example (Text-to-Image)
 
 ```json
 {
@@ -339,6 +597,25 @@ print(f"Failed: {batch_result.failed}")
     "aspect_ratio": "16:9",
     "model": "pro",
     "resolution": "2K"
+  }
+}
+```
+
+### Image-to-Image Example
+
+```json
+{
+  "prompt": "",
+  "reference_sets": [
+    {
+      "category": "style",
+      "images": ["<style_image_1>", "<style_image_2>"]
+    }
+  ],
+  "config": {
+    "source_image": "<photo_to_transform>",
+    "aspect_ratio": "1:1",
+    "model": "nano"
   }
 }
 ```

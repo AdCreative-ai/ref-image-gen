@@ -81,12 +81,22 @@ class ReferenceSet:
 
 @dataclass
 class GenerationConfig:
-    """Configuration for image generation."""
+    """Configuration for image generation.
 
-    num_images: int = 1
+    Attributes:
+        aspect_ratio: Output aspect ratio.
+        model: Model to use (nano or pro).
+        resolution: Resolution for Pro model (1K, 2K, 4K).
+        source_image: Optional source image for image-to-image transformation.
+                      When provided, the generation transforms this image using
+                      the fine-tuning references instead of generating from scratch.
+        output_mime_type: MIME type for output images.
+    """
+
     aspect_ratio: AspectRatio = AspectRatio.SQUARE_1_1
     model: ModelType = ModelType.NANO
     resolution: Optional[Resolution] = None  # Only for Pro model
+    source_image: Optional[ImageInput] = None  # For image-to-image mode
     output_mime_type: str = "image/png"
 
 
@@ -448,7 +458,6 @@ class BaseGenerator(ABC):
                 "category": self.category,
                 "reference_count": reference_count,
                 "config": {
-                    "num_images": config.num_images,
                     "aspect_ratio": config.aspect_ratio.value,
                     "model": config.model.value,
                     "resolution": config.resolution.value if config.resolution else None,

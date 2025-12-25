@@ -95,12 +95,14 @@ class MultiRefGenerator:
         self,
         user_prompt: str,
         reference_sets: list[ReferenceSet],
+        has_source_image: bool = False,
     ) -> str:
         """Build the optimized prompt based on the combination of categories.
 
         Args:
             user_prompt: The user's original prompt.
             reference_sets: List of reference sets with their categories.
+            has_source_image: Whether a source image is provided for image-to-image mode.
 
         Returns:
             Optimized prompt string.
@@ -112,6 +114,7 @@ class MultiRefGenerator:
         num_styles = category_counts.get(CategoryType.STYLE, 0)
 
         # Calculate image positions for each reference set
+        # If there's a source image, it will be the LAST image (after all references)
         image_positions = []
         current_pos = 1
         for rs in reference_sets:
@@ -120,16 +123,26 @@ class MultiRefGenerator:
             image_positions.append((start, end))
             current_pos = end + 1
 
+        # Source image position (if present)
+        source_img_pos = current_pos if has_source_image else None
+
         # Build prompt based on combination
         prompt_parts = []
 
         # Add reference instructions based on combination
-        prompt_parts.append(self._get_combination_prompt(
-            reference_sets, image_positions, num_faces, num_objects, num_styles
-        ))
+        if has_source_image:
+            prompt_parts.append(self._get_image_to_image_prompt(
+                reference_sets, image_positions, source_img_pos,
+                num_faces, num_objects, num_styles
+            ))
+        else:
+            prompt_parts.append(self._get_combination_prompt(
+                reference_sets, image_positions, num_faces, num_objects, num_styles
+            ))
 
-        # Add user's prompt
-        prompt_parts.append(f"\nScene description: {user_prompt}")
+        # Add user's prompt if provided
+        if user_prompt and user_prompt.strip():
+            prompt_parts.append(f"\nAdditional instructions: {user_prompt}")
 
         # Add quality instructions
         prompt_parts.append(
@@ -137,6 +150,101 @@ class MultiRefGenerator:
         )
 
         return "\n".join(prompt_parts)
+
+    def _get_image_to_image_prompt(
+        self,
+        reference_sets: list[ReferenceSet],
+        image_positions: list[tuple[int, int]],
+        source_img_pos: int,
+        num_faces: int,
+        num_objects: int,
+        num_styles: int,
+    ) -> str:
+        """Generate prompt for image-to-image transformation mode."""
+
+        # Helper to describe image range
+        def img_range(idx: int) -> str:
+            start, end = image_positions[idx]
+            if start == end:
+                return f"image {start}"
+            return f"images {start}-{end}"
+
+        source_ref = f"image {source_img_pos}"
+        total_sets = len(reference_sets)
+
+        # Build the base transformation instruction
+        if total_sets == 1:
+            rs = reference_sets[0]
+            if rs.category == CategoryType.STYLE:
+                return (
+                    f"Transform {source_ref} (the source image) by applying the artistic style from {img_range(0)}. "
+                    f"Extract the color palette, brushwork, textures, and artistic techniques from the style reference. "
+                    f"Keep the content and composition of the source image but render it in this artistic style."
+                )
+            elif rs.category == CategoryType.FACE:
+                return (
+                    f"Transform {source_ref} (the source image) by placing the person from {img_range(0)} into the scene. "
+                    f"Use the scene, setting, and composition from the source image, but feature the person's face and identity "
+                    f"from the face reference. Maintain the person's facial features and likeness."
+                )
+            else:  # OBJECT
+                return (
+                    f"Transform {source_ref} (the source image) by placing the product from {img_range(0)} into the scene. "
+                    f"Use the setting and context from the source image, but add or replace with the product shown in the reference. "
+                    f"Preserve the product's EXACT appearance: shape, colors, design, and branding."
+                )
+
+        # Two reference sets
+        if total_sets == 2:
+            categories = [rs.category for rs in reference_sets]
+
+            if num_styles == 2:
+                return (
+                    f"Transform {source_ref} (the source image) by blending the artistic styles from {img_range(0)} and {img_range(1)}. "
+                    f"Keep the content and composition of the source image but render it using a blend of both artistic styles."
+                )
+
+            if num_faces == 2:
+                return (
+                    f"Transform {source_ref} (the source image) by placing the two people from {img_range(0)} and {img_range(1)} into the scene. "
+                    f"Use the setting from the source image but feature both persons' faces and identities."
+                )
+
+            if num_objects == 2:
+                return (
+                    f"Transform {source_ref} (the source image) by placing both products from {img_range(0)} and {img_range(1)} into the scene. "
+                    f"Use the setting from the source image but feature both products with their exact appearances."
+                )
+
+            if num_faces == 1 and num_styles == 1:
+                face_idx = 0 if categories[0] == CategoryType.FACE else 1
+                style_idx = 1 - face_idx
+                return (
+                    f"Transform {source_ref} (the source image) by placing the person from {img_range(face_idx)} into the scene "
+                    f"and applying the artistic style from {img_range(style_idx)}. "
+                    f"Use the composition from the source image, add the person's identity, and render in the artistic style."
+                )
+
+            if num_faces == 1 and num_objects == 1:
+                face_idx = 0 if categories[0] == CategoryType.FACE else 1
+                obj_idx = 1 - face_idx
+                return (
+                    f"Transform {source_ref} (the source image) by placing the person from {img_range(face_idx)} "
+                    f"and the product from {img_range(obj_idx)} into the scene. "
+                    f"Use the setting from the source image but feature the person holding or using the product."
+                )
+
+            if num_objects == 1 and num_styles == 1:
+                obj_idx = 0 if categories[0] == CategoryType.OBJECT else 1
+                style_idx = 1 - obj_idx
+                return (
+                    f"Transform {source_ref} (the source image) by placing the product from {img_range(obj_idx)} into the scene "
+                    f"and applying the artistic style from {img_range(style_idx)}. "
+                    f"Feature the product with its exact appearance, rendered in the artistic style."
+                )
+
+        # Fallback
+        return f"Transform {source_ref} (the source image) using the style and elements from the reference images."
 
     def _get_combination_prompt(
         self,
@@ -384,18 +492,29 @@ class MultiRefGenerator:
         if config.resolution and config.model != ModelType.PRO:
             raise ValueError("Resolution option is only available for Pro model")
 
-        # Build optimized prompt
-        optimized_prompt = self._build_prompt(prompt, reference_sets)
+        # Check if we're in image-to-image mode
+        has_source_image = config.source_image is not None
 
-        # Build content parts: all reference images + prompt
+        # Build optimized prompt
+        optimized_prompt = self._build_prompt(prompt, reference_sets, has_source_image)
+
+        # Build content parts: all reference images + source image (if any) + prompt
         contents = []
 
+        # Add reference images first
         for rs in reference_sets:
             for img in rs.images:
                 image_bytes = self._convert_image_to_bytes(img)
                 image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
                 contents.append(image_part)
 
+        # Add source image if in image-to-image mode
+        if has_source_image:
+            source_bytes = self._convert_image_to_bytes(config.source_image)
+            source_part = types.Part.from_bytes(data=source_bytes, mime_type="image/png")
+            contents.append(source_part)
+
+        # Add prompt last
         contents.append(optimized_prompt)
 
         # Configure safety settings
@@ -468,13 +587,13 @@ class MultiRefGenerator:
             prompt_used=optimized_prompt,
             metadata={
                 "combination": combination_key,
+                "mode": "image-to-image" if config.source_image else "text-to-image",
                 "reference_sets": [
                     {"category": rs.category.value, "image_count": len(rs.images)}
                     for rs in reference_sets
                 ],
                 "total_reference_images": total_ref_images,
                 "config": {
-                    "num_images": config.num_images,
                     "aspect_ratio": config.aspect_ratio.value,
                     "model": config.model.value,
                     "resolution": config.resolution.value if config.resolution else None,
